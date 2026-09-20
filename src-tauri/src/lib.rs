@@ -1,4 +1,5 @@
 mod history;
+mod pet;
 mod presence;
 mod rhythm;
 mod tray;
@@ -126,6 +127,7 @@ pub fn run() {
                 tray_pause: Mutex::new(None),
             });
             tray::setup_tray(app)?;
+            pet::setup_pet_window(app)?;
             presence::spawn_presence_loop(app.handle().clone());
             Ok(())
         })

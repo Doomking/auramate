@@ -23,6 +23,11 @@ pub const IDLE_QUIET: Duration = Duration::from_secs(30);
 /// ~5 min idle: 离开 = Start Break.
 pub const IDLE_AWAY: Duration = Duration::from_secs(5 * 60);
 
+/// ~5 min: pet re-轻触 cadence during 超时.
+pub const PET_NUDGE_CADENCE: Duration = Duration::from_secs(5 * 60);
+/// How long each pet 轻触 pulse stays visible.
+pub const PET_NUDGE_HOLD: Duration = Duration::from_secs(8);
+
 /// Fixed 恢复提示 pool — core picks 1–3 per intentional break.
 pub const RECOVERY_POOL: &[&str] = &[
     "Drink some water",
@@ -47,6 +52,15 @@ pub enum Presence {
     Away,
     LockedSleeping,
     Returned,
+}
+
+/// Pet display state — Idle / 轻触 / Rest only (no failure face).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PetState {
+    Idle,
+    Nudge,
+    Rest,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -80,6 +94,7 @@ pub struct Snapshot {
     /// One-shot 恢复提示 after intentional Start Break while present.
     pub show_recovery_hint: bool,
     pub recovery_suggestions: Vec<String>,
+    pub pet_state: PetState,
 }
 
 #[derive(Debug, Clone)]
@@ -151,6 +166,7 @@ impl RhythmCore {
                 presence: self.presence,
                 show_recovery_hint: self.show_recovery_hint,
                 recovery_suggestions: self.recovery_suggestions.clone(),
+                pet_state: PetState::Idle,
             };
         };
 
@@ -168,6 +184,7 @@ impl RhythmCore {
             .snooze_until
             .map(|until| now < until)
             .unwrap_or(false);
+        let should_nudge = self.idle_nudge(past_end && !snooze_active, past_end);
 
         Snapshot {
             phase: Some(session.phase),
@@ -175,10 +192,38 @@ impl RhythmCore {
             overrun_ms: overrun.as_millis() as u64,
             paused,
             focuses_completed_in_cycle: self.focuses_completed_in_cycle,
-            should_nudge: self.idle_nudge(past_end && !snooze_active, past_end),
+            should_nudge,
             presence: self.presence,
             show_recovery_hint: self.show_recovery_hint,
             recovery_suggestions: self.recovery_suggestions.clone(),
+            pet_state: self.compute_pet_state(session.phase, past_end, should_nudge, overrun),
+        }
+    }
+
+    fn compute_pet_state(
+        &self,
+        phase: Phase,
+        past_end: bool,
+        should_nudge: bool,
+        overrun: Duration,
+    ) -> PetState {
+        match phase {
+            Phase::ShortBreak | Phase::LongBreak if !past_end => PetState::Rest,
+            Phase::ShortBreak | Phase::LongBreak => {
+                if should_nudge && pet_nudge_pulse(overrun) {
+                    PetState::Nudge
+                } else {
+                    PetState::Rest
+                }
+            }
+            Phase::Focus if !past_end => PetState::Idle, // Focus: stay quiet / low-frequency
+            Phase::Focus => {
+                if should_nudge && pet_nudge_pulse(overrun) {
+                    PetState::Nudge
+                } else {
+                    PetState::Idle
+                }
+            }
         }
     }
 
@@ -510,6 +555,17 @@ impl RhythmCore {
         }
         self.sync_overrun(now);
     }
+}
+
+/// True during the short hold window at the start of each ~5 min overrun cycle.
+pub fn pet_nudge_pulse(overrun: Duration) -> bool {
+    let cadence = PET_NUDGE_CADENCE.as_millis();
+    let hold = PET_NUDGE_HOLD.as_millis();
+    if cadence == 0 {
+        return false;
+    }
+    let cycle = overrun.as_millis() % cadence;
+    cycle < hold
 }
 
 #[cfg(test)]
@@ -888,5 +944,51 @@ mod tests {
         core.observe_idle(away_at + Duration::from_secs(10), Duration::ZERO);
         let closed = core.drain_intervals();
         assert!(closed.iter().any(|i| i.kind == IntervalKind::Away));
+    }
+
+    #[test]
+    fn pet_is_idle_during_focus_and_rest_on_break() {
+        let mut core = RhythmCore::new();
+        let now = t0();
+        core.start_focus(now);
+        assert_eq!(core.snapshot(now).pet_state, PetState::Idle);
+        core.start_break(now + Duration::from_secs(1));
+        assert_eq!(
+            core.snapshot(now + Duration::from_secs(1)).pet_state,
+            PetState::Rest
+        );
+    }
+
+    #[test]
+    fn pet_nudges_on_overrun_pulse_then_idles_between() {
+        let mut core = RhythmCore::new();
+        let now = t0();
+        core.start_focus(now);
+        let at_end = now + FOCUS_DURATION;
+        assert_eq!(core.snapshot(at_end).pet_state, PetState::Nudge);
+        let mid_cycle = at_end + Duration::from_secs(60);
+        assert_eq!(core.snapshot(mid_cycle).pet_state, PetState::Idle);
+        let next_pulse = at_end + PET_NUDGE_CADENCE;
+        assert_eq!(core.snapshot(next_pulse).pet_state, PetState::Nudge);
+    }
+
+    #[test]
+    fn pet_nudge_pulse_windows() {
+        assert!(pet_nudge_pulse(Duration::ZERO));
+        assert!(pet_nudge_pulse(Duration::from_secs(3)));
+        assert!(!pet_nudge_pulse(Duration::from_secs(60)));
+        assert!(pet_nudge_pulse(PET_NUDGE_CADENCE));
+    }
+
+    #[test]
+    fn quiet_idle_silences_pet_nudge_on_overrun() {
+        let mut core = RhythmCore::new();
+        let now = t0();
+        core.start_focus(now);
+        let past = now + FOCUS_DURATION;
+        assert_eq!(core.snapshot(past).pet_state, PetState::Nudge);
+        core.observe_idle(past, IDLE_QUIET);
+        assert_eq!(core.snapshot(past).pet_state, PetState::Idle);
+        assert!(!core.snapshot(past).should_nudge);
     }
 }
