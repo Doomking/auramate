@@ -73,6 +73,7 @@ pub enum IntervalKind {
     Away,
     LockedSleeping,
     HyperFocus,
+    MediaMeeting,
 }
 
 /// Closed interval intent for the History adapter (wall-clock stamped outside core).
@@ -98,6 +99,8 @@ pub struct Snapshot {
     pub pet_state: PetState,
     /// 深度心流：超时后两次未响应轻触，安静记录，不是失败。
     pub hyper_focus: bool,
+    /// 媒体/会议：推迟宠物轻触（托盘仍可更新时间）。
+    pub media_meeting: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -135,10 +138,13 @@ pub struct RhythmCore {
     next_nudge_pulse: u32,
     /// 媒体/会议：推迟宠物轻触，且不计入深度心流进入。
     media_meeting: bool,
+    /// After leaving 媒体/会议 past a boundary: one catch-up pet 轻触 window.
+    media_catchup_until: Option<Instant>,
     open_session_interval: Option<OpenInterval>,
     open_overrun: Option<OpenInterval>,
     open_presence_interval: Option<OpenInterval>,
     open_hyper_interval: Option<OpenInterval>,
+    open_media_interval: Option<OpenInterval>,
     closed_intervals: Vec<ClosedInterval>,
 }
 
@@ -163,16 +169,23 @@ impl RhythmCore {
             unanswered_nudge_pulses: 0,
             next_nudge_pulse: 0,
             media_meeting: false,
+            media_catchup_until: None,
             open_session_interval: None,
             open_overrun: None,
             open_presence_interval: None,
             open_hyper_interval: None,
+            open_media_interval: None,
             closed_intervals: Vec::new(),
         }
     }
 
-    /// Advance time-dependent policy (深度心流 entry, overrun intervals).
+    /// Advance time-dependent policy (深度心流 entry, overrun intervals, catch-up expiry).
     pub fn tick(&mut self, now: Instant) {
+        if let Some(until) = self.media_catchup_until {
+            if now >= until {
+                self.media_catchup_until = None;
+            }
+        }
         self.advance_hyper_focus(now);
         self.sync_overrun(now);
     }
@@ -191,6 +204,7 @@ impl RhythmCore {
                 recovery_suggestions: self.recovery_suggestions.clone(),
                 pet_state: PetState::Idle,
                 hyper_focus: self.hyper_focus,
+                media_meeting: self.media_meeting,
             };
         };
 
@@ -220,13 +234,15 @@ impl RhythmCore {
             presence: self.presence,
             show_recovery_hint: self.show_recovery_hint,
             recovery_suggestions: self.recovery_suggestions.clone(),
-            pet_state: self.compute_pet_state(session.phase, past_end, should_nudge, overrun),
+            pet_state: self.compute_pet_state(now, session.phase, past_end, should_nudge, overrun),
             hyper_focus: self.hyper_focus,
+            media_meeting: self.media_meeting,
         }
     }
 
     fn compute_pet_state(
         &self,
+        now: Instant,
         phase: Phase,
         past_end: bool,
         should_nudge: bool,
@@ -235,18 +251,34 @@ impl RhythmCore {
         if self.hyper_focus {
             return PetState::Idle;
         }
+        // 媒体/会议：postpone pet 轻触 (tray may still show time / boundary).
+        if self.media_meeting {
+            return match phase {
+                Phase::ShortBreak | Phase::LongBreak => PetState::Rest,
+                Phase::Focus => PetState::Idle,
+            };
+        }
+        let catchup = self
+            .media_catchup_until
+            .map(|until| now < until)
+            .unwrap_or(false);
+        let pet_nudge = if catchup {
+            should_nudge
+        } else {
+            should_nudge && pet_nudge_pulse(overrun)
+        };
         match phase {
             Phase::ShortBreak | Phase::LongBreak if !past_end => PetState::Rest,
             Phase::ShortBreak | Phase::LongBreak => {
-                if should_nudge && pet_nudge_pulse(overrun) {
+                if pet_nudge {
                     PetState::Nudge
                 } else {
                     PetState::Rest
                 }
             }
-            Phase::Focus if !past_end => PetState::Idle, // Focus: stay quiet / low-frequency
+            Phase::Focus if !past_end => PetState::Idle,
             Phase::Focus => {
-                if should_nudge && pet_nudge_pulse(overrun) {
+                if pet_nudge {
                     PetState::Nudge
                 } else {
                     PetState::Idle
@@ -376,6 +408,7 @@ impl RhythmCore {
     fn note_user_action(&mut self, now: Instant) {
         self.exit_hyper_focus(now);
         self.reset_nudge_counters();
+        self.media_catchup_until = None;
     }
 
     fn open_session(&mut self, kind: IntervalKind, now: Instant) {
@@ -607,9 +640,41 @@ impl RhythmCore {
         self.tick(now);
     }
 
-    /// 媒体/会议 on/off — postpones pet 轻触 counting toward 深度心流.
+    /// 媒体/会议 on/off — postpones pet 轻触; catch-up at most once on exit if past boundary.
     pub fn observe_media_meeting(&mut self, now: Instant, active: bool) {
-        self.media_meeting = active;
+        if active == self.media_meeting {
+            self.tick(now);
+            return;
+        }
+        if active {
+            self.media_catchup_until = None;
+            Self::close_open(
+                &mut self.open_media_interval,
+                now,
+                &mut self.closed_intervals,
+            );
+            self.open_media_interval = Some(OpenInterval {
+                kind: IntervalKind::MediaMeeting,
+                start: now,
+            });
+            self.media_meeting = true;
+        } else {
+            Self::close_open(
+                &mut self.open_media_interval,
+                now,
+                &mut self.closed_intervals,
+            );
+            self.media_meeting = false;
+            // At most one catch-up pet 轻触 if a boundary already passed.
+            let past_end = self
+                .session
+                .as_ref()
+                .map(|s| s.paused_remaining.is_none() && now >= s.planned_end)
+                .unwrap_or(false);
+            if past_end && !self.hyper_focus {
+                self.media_catchup_until = Some(now + PET_NUDGE_HOLD);
+            }
+        }
         self.tick(now);
     }
 
@@ -1216,5 +1281,50 @@ mod tests {
         core.extend(deep, EXTEND_FIVE);
         let closed = core.drain_intervals();
         assert!(closed.iter().any(|i| i.kind == IntervalKind::HyperFocus));
+    }
+
+    #[test]
+    fn media_meeting_postpones_pet_nudge_tray_boundary_still_true() {
+        let mut core = RhythmCore::new();
+        let now = t0();
+        core.start_focus(now);
+        let past = now + FOCUS_DURATION;
+        assert_eq!(core.snapshot(past).pet_state, PetState::Nudge);
+        assert!(core.snapshot(past).should_nudge);
+        core.observe_media_meeting(past, true);
+        let snap = core.snapshot(past);
+        assert!(snap.media_meeting);
+        assert_eq!(snap.pet_state, PetState::Idle);
+        // Tray may still reflect boundary / remaining time.
+        assert!(snap.should_nudge);
+        assert_eq!(snap.overrun_ms, 0);
+    }
+
+    #[test]
+    fn leaving_media_after_boundary_arms_one_catchup_nudge() {
+        let mut core = RhythmCore::new();
+        let now = t0();
+        core.start_focus(now);
+        let past = now + FOCUS_DURATION + Duration::from_secs(60);
+        core.observe_media_meeting(past, true);
+        assert_eq!(core.snapshot(past).pet_state, PetState::Idle);
+        core.observe_media_meeting(past, false);
+        let snap = core.snapshot(past);
+        assert!(!snap.media_meeting);
+        assert_eq!(snap.pet_state, PetState::Nudge);
+        // After hold window, catch-up ends (mid-cycle without pulse).
+        let after_hold = past + PET_NUDGE_HOLD;
+        core.tick(after_hold);
+        assert_eq!(core.snapshot(after_hold).pet_state, PetState::Idle);
+    }
+
+    #[test]
+    fn media_meeting_emits_history_interval() {
+        let mut core = RhythmCore::new();
+        let now = t0();
+        core.observe_media_meeting(now, true);
+        core.observe_media_meeting(now + Duration::from_secs(30), false);
+        let closed = core.drain_intervals();
+        assert!(closed.iter().any(|i| i.kind == IntervalKind::MediaMeeting));
     }
 }
