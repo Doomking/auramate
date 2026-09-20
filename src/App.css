@@ -87,3 +87,91 @@ button:focus-visible {
   outline: 2px solid #8ea394;
   outline-offset: 2px;
 }
+
+.recovery {
+  margin-top: 0.5rem;
+  padding: 1rem 1.25rem;
+  max-width: 22rem;
+  text-align: left;
+  background: #efece6;
+  border-radius: 0.75rem;
+}
+
+.recovery-title {
+  margin: 0 0 0.5rem;
+  font-size: 0.9rem;
+  color: #6b736c;
+}
+
+.recovery ul {
+  margin: 0 0 0.75rem;
+  padding-left: 1.1rem;
+  color: #2f3430;
+}
+
+.recovery li {
+  margin: 0.25rem 0;
+}
+
+.presence {
+  text-transform: capitalize;
+}
+
+.footer-nav {
+  margin-top: 2rem;
+}
+
+button.linkish {
+  border: none;
+  color: #8ea394;
+  padding: 0.35rem 0.5rem;
+}
+
+.history-shell {
+  justify-content: flex-start;
+  align-items: stretch;
+  max-width: 36rem;
+  margin: 0 auto;
+}
+
+.history-header {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.history-title {
+  margin: 0;
+  font-size: 1.25rem;
+  font-weight: 500;
+}
+
+.history-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+
+.history-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.5rem 0;
+  border-bottom: 1px solid #e2e0d8;
+}
+
+.history-kind {
+  text-transform: capitalize;
+  color: #2f3430;
+}
+
+.history-when {
+  color: #6b736c;
+  font-size: 0.9rem;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
