@@ -165,4 +165,19 @@ mod tests {
         assert_eq!(pet_surface_label(PetState::Nudge), "nudge");
         assert_eq!(pet_surface_label(PetState::Rest), "rest");
     }
+
+    #[test]
+    fn nine_pet_stills_ship_in_public() {
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../public/pets");
+        for kind in ["cat", "dog", "plant"] {
+            for state in ["idle", "nudge", "rest"] {
+                let path = root.join(format!("{kind}-{state}.jpg"));
+                assert!(
+                    path.is_file(),
+                    "missing pet still {} (see docs/credits.md)",
+                    path.display()
+                );
+            }
+        }
+    }
 }

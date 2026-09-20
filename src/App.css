@@ -64,6 +64,19 @@ body {
   margin-top: 0.5rem;
 }
 
+.pet-picker {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.5rem;
+  margin-top: 1.25rem;
+}
+
+button.quiet.selected {
+  border-color: #8ea394;
+  color: #8ea394;
+}
+
 button {
   border: none;
   border-radius: 999px;

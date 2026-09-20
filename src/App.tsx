@@ -1,5 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import {
+  PET_KIND_CHANGE_EVENT,
+  PET_KINDS,
+  petKindLabel,
+  readPetKind,
+  writePetKind,
+  type PetKind,
+} from "./pets";
 import "./App.css";
 
 type Phase = "focus" | "short_break" | "long_break";
@@ -64,6 +72,7 @@ function App() {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [view, setView] = useState<"main" | "history">("main");
   const [history, setHistory] = useState<HistoryRow[]>([]);
+  const [petKind, setPetKind] = useState<PetKind>(() => readPetKind());
 
   const refresh = useCallback(async () => {
     setSnapshot(await invoke<Snapshot>("rhythm_snapshot"));
@@ -76,6 +85,12 @@ function App() {
     }, 250);
     return () => window.clearInterval(id);
   }, [refresh]);
+
+  function selectPet(kind: PetKind) {
+    writePetKind(kind);
+    setPetKind(kind);
+    window.dispatchEvent(new Event(PET_KIND_CHANGE_EVENT));
+  }
 
   async function call(cmd: string, args?: Record<string, unknown>) {
     setSnapshot(await invoke<Snapshot>(cmd, args));
@@ -199,6 +214,20 @@ function App() {
           </button>
         </div>
       ) : null}
+
+      <div className="pet-picker" role="group" aria-label="Companion">
+        {PET_KINDS.map((kind) => (
+          <button
+            key={kind}
+            type="button"
+            className={kind === petKind ? "quiet selected" : "quiet"}
+            aria-pressed={kind === petKind}
+            onClick={() => selectPet(kind)}
+          >
+            {petKindLabel(kind)}
+          </button>
+        ))}
+      </div>
 
       <nav className="footer-nav">
         <button type="button" className="quiet linkish" onClick={() => void openHistory()}>

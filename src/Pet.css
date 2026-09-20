@@ -18,49 +18,27 @@ body,
   pointer-events: none;
 }
 
-.pet-body {
-  width: 72px;
-  height: 72px;
-  border-radius: 50% 50% 46% 46%;
-  background: #8ea394;
-  box-shadow: inset 0 -8px 0 rgba(47, 52, 48, 0.12);
+.pet-still {
+  width: 96px;
+  height: 96px;
+  object-fit: contain;
+  border-radius: 18px;
   transition:
     transform 0.45s ease,
-    background-color 0.45s ease,
     opacity 0.45s ease;
 }
 
-.pet-mark {
-  position: absolute;
-  top: 18%;
-  font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
-  font-size: 1.35rem;
-  color: #f7f6f2;
-  opacity: 0;
-  transition: opacity 0.35s ease;
-}
-
-.pet-idle .pet-body {
-  opacity: 0.85;
+.pet-idle .pet-still {
+  opacity: 0.92;
   transform: scale(0.96);
 }
 
-.pet-nudge .pet-body {
-  background: #6f8f7a;
+.pet-nudge .pet-still {
   transform: translateY(-6px) scale(1.04);
-}
-
-.pet-nudge .pet-mark {
   opacity: 1;
 }
 
-.pet-rest .pet-body {
-  background: #a8b5ab;
-  transform: scale(0.9) rotate(-6deg);
-  opacity: 0.75;
-}
-
-.pet-rest .pet-mark {
-  opacity: 0.9;
-  color: #2f3430;
+.pet-rest .pet-still {
+  transform: scale(0.9);
+  opacity: 0.85;
 }
