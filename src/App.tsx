@@ -10,6 +10,7 @@ type Snapshot = {
   overrun_ms: number;
   paused: boolean;
   focuses_completed_in_cycle: number;
+  should_nudge: boolean;
 };
 
 const PHASE_LABEL: Record<Phase, string> = {
@@ -47,20 +48,8 @@ function App() {
     return () => window.clearInterval(id);
   }, [refresh]);
 
-  async function startFocus() {
-    setSnapshot(await invoke<Snapshot>("rhythm_start_focus"));
-  }
-
-  async function startBreak() {
-    setSnapshot(await invoke<Snapshot>("rhythm_start_break"));
-  }
-
-  async function pause() {
-    setSnapshot(await invoke<Snapshot>("rhythm_pause"));
-  }
-
-  async function resume() {
-    setSnapshot(await invoke<Snapshot>("rhythm_resume"));
+  async function call(cmd: string, args?: Record<string, unknown>) {
+    setSnapshot(await invoke<Snapshot>(cmd, args));
   }
 
   if (!snapshot) {
@@ -71,6 +60,7 @@ function App() {
   const idle = phase === null;
   const inFocus = phase === "focus";
   const inBreak = phase === "short_break" || phase === "long_break";
+  const active = !idle;
 
   return (
     <main className="shell">
@@ -79,29 +69,51 @@ function App() {
         {formatRemaining(snapshot.remaining_ms, snapshot.overrun_ms)}
       </p>
       {snapshot.paused ? <p className="hint">Paused</p> : null}
+      {snapshot.should_nudge ? (
+        <p className="hint nudge" role="status">
+          Gentle nudge — time for the next step
+        </p>
+      ) : null}
 
       <div className="actions">
         {idle || inBreak ? (
-          <button type="button" className="primary" onClick={() => void startFocus()}>
+          <button type="button" className="primary" onClick={() => void call("rhythm_start_focus")}>
             Start Focus
           </button>
         ) : null}
         {inFocus ? (
-          <button type="button" className="primary" onClick={() => void startBreak()}>
+          <button type="button" className="primary" onClick={() => void call("rhythm_start_break")}>
             Start Break
           </button>
         ) : null}
-        {!idle && !snapshot.paused ? (
-          <button type="button" className="quiet" onClick={() => void pause()}>
+        {active && !snapshot.paused ? (
+          <button type="button" className="quiet" onClick={() => void call("rhythm_pause")}>
             Pause
           </button>
         ) : null}
         {snapshot.paused ? (
-          <button type="button" className="quiet" onClick={() => void resume()}>
+          <button type="button" className="quiet" onClick={() => void call("rhythm_resume")}>
             Resume
           </button>
         ) : null}
       </div>
+
+      {active ? (
+        <div className="actions secondary">
+          <button type="button" className="quiet" onClick={() => void call("rhythm_extend", { minutes: 5 })}>
+            +5
+          </button>
+          <button type="button" className="quiet" onClick={() => void call("rhythm_extend", { minutes: 10 })}>
+            +10
+          </button>
+          <button type="button" className="quiet" onClick={() => void call("rhythm_snooze")}>
+            Snooze
+          </button>
+          <button type="button" className="quiet" onClick={() => void call("rhythm_skip")}>
+            Skip
+          </button>
+        </div>
+      ) : null}
     </main>
   );
 }

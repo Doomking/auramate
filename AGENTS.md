@@ -24,7 +24,27 @@ Scaffolded with official `create-tauri-app` (Tauri 2, React + TypeScript, pnpm).
 | Rust checks (crate) | `cd src-tauri && cargo check` |
 | Rust tests (crate) | `cd src-tauri && cargo test` |
 
-Rhythm Core tests will live in the Rust crate; prefer `cargo test` at the Rhythm Core seam once that module exists (`docs/spec.md`).
+Rhythm Core tests live in `src-tauri` (`cargo test`). Prefer that seam for domain behaviour (`docs/spec.md`).
+
+## What's next (frontier)
+
+Phase 1 implementation tickets are GitHub issues under parent [一期规格 #19](https://github.com/Doomking/auramate/issues/19), labelled `ready-for-agent`.
+
+**In the browser:** open that parent issue and read its sub-issues / open `ready-for-agent` list.
+
+**Locally (this is how you know what to implement next):**
+
+```bash
+# Open ready-for-agent issues
+gh issue list --repo Doomking/auramate --label ready-for-agent --state open
+
+# For a candidate number N, check blockers (0 = takeable now)
+gh api repos/Doomking/auramate/issues/N --jq '{number, title, state, blocked_by: .issue_dependencies_summary.blocked_by}'
+```
+
+Take the lowest-number (or first in parent order) issue with `blocked_by: 0`, then `/implement <N>`.
+
+Do not invent work outside open tickets without updating the map/spec.
 
 ## Stack (locked)
 
