@@ -8,6 +8,7 @@ Local-first desktop companion for work–rest rhythm. Not a gamified pomodoro: a
 | --- | --- |
 | [`docs/requirement.md`](docs/requirement.md) | Product intent |
 | [`docs/spec.md`](docs/spec.md) | Phase 1 buildable plan |
+| [`docs/credits.md`](docs/credits.md) | Pet art source and redistribution terms |
 | [`CONTEXT.md`](CONTEXT.md) | Domain vocabulary |
 | [`AGENTS.md`](AGENTS.md) | Commands + **what's next** for agents |
 
