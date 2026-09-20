@@ -82,6 +82,7 @@ fn kind_label(kind: IntervalKind) -> &'static str {
         IntervalKind::Away => "away",
         IntervalKind::LockedSleeping => "locked_sleeping",
         IntervalKind::HyperFocus => "hyper_focus",
+        IntervalKind::MediaMeeting => "media_meeting",
     }
 }
 

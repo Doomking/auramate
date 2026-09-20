@@ -16,6 +16,7 @@ type Snapshot = {
   show_recovery_hint: boolean;
   recovery_suggestions: string[];
   hyper_focus: boolean;
+  media_meeting?: boolean;
 };
 
 type HistoryRow = {
