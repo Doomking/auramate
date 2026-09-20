@@ -167,8 +167,18 @@ where
     let state = app.state::<AppState>();
     let mut core = state.core.lock().expect("rhythm core lock");
     let now = Instant::now();
+    let wall = std::time::SystemTime::now();
     f(&mut core, now);
-    core.snapshot(Instant::now())
+    let closed = core.drain_intervals();
+    let snap = core.snapshot(Instant::now());
+    drop(core);
+    if !closed.is_empty() {
+        if let Ok(hist) = state.history.lock() {
+            let _ = hist.append_closed(&closed, now, wall);
+        }
+    }
+    crate::persist_after_presence(app);
+    snap
 }
 
 fn spawn_tray_ticker(app: AppHandle) {
