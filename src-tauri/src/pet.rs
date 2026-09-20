@@ -1,7 +1,6 @@
 //! Pet ambient window — non-activating, transparent, monitor-edge companion.
 //! Renders core `PetState` only; no second corner HUD.
 
-use crate::rhythm::PetState;
 use std::sync::Mutex;
 use std::time::Duration;
 use tauri::{
@@ -132,7 +131,8 @@ fn place_on_pointer_monitor(app: &AppHandle) -> tauri::Result<()> {
 
 /// CSS class / label helper for the pet surface (adapter-side, tested).
 #[cfg(test)]
-pub fn pet_surface_label(state: PetState) -> &'static str {
+pub fn pet_surface_label(state: crate::rhythm::PetState) -> &'static str {
+    use crate::rhythm::PetState;
     match state {
         PetState::Idle => "idle",
         PetState::Nudge => "nudge",
@@ -143,6 +143,7 @@ pub fn pet_surface_label(state: PetState) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::rhythm::PetState;
 
     #[test]
     fn edge_position_is_bottom_right_with_margin() {
