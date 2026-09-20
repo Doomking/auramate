@@ -12,7 +12,7 @@
 
 ## Solution
 
-AuraMate 一期是一个本地优先的桌面应用（Tauri 2 + Svelte + Rust）。用户开始一段专注时段后，主界面与托盘安静显示阶段与剩余时间；宠物低频待机。到点后托盘变化，宠物（若开启）做一次轻触；系统通知默认关闭。用户可开始休息、加时、延后、跳过或暂停——没有失败态。离开约五分钟等于开始休息；人回来只按当前时段接上，不冲刷积压。媒体/会议与深度心流在需要时推迟或停止宠物轻触。历史只在本机、藏在次级页。
+AuraMate 一期是一个本地优先的桌面应用（Tauri 2 + React + Rust）。用户开始一段专注时段后，主界面与托盘安静显示阶段与剩余时间；宠物低频待机。到点后托盘变化，宠物（若开启）做一次轻触；系统通知默认关闭。用户可开始休息、加时、延后、跳过或暂停——没有失败态。离开约五分钟等于开始休息；人回来只按当前时段接上，不冲刷积压。媒体/会议与深度心流在需要时推迟或停止宠物轻触。历史只在本机、藏在次级页。
 
 ## User Stories
 
@@ -86,7 +86,7 @@ AuraMate 一期是一个本地优先的桌面应用（Tauri 2 + Svelte + Rust）
 
 ### Stack and layout
 
-- Desktop: Rust + Tauri 2; UI: Svelte + TypeScript; generate the app with official `create-tauri-app` (do not invent the tree by hand). See `AGENTS.md`.
+- Desktop: Rust + Tauri 2; UI: React + TypeScript (`create-tauri-app` `react-ts`); do not invent the tree by hand. See `AGENTS.md` and `docs/adr/0001-react-ui.md`.
 - Domain ownership: Rust owns Timer / Session / Reminder / Presence and remaining-time math from timestamps, not `setInterval` decrement.
 - Storage: SQLite for session, break, overrun, and presence-related intervals.
 - Platforms: spec covers macOS and Windows; implement Mac first. Decision: [一期目标平台是只 macOS，还是 macOS + Windows？](https://github.com/Doomking/auramate/issues/3).

@@ -11,4 +11,4 @@ pnpm install
 pnpm tauri dev
 ```
 
-See `AGENTS.md` for check / build / test commands used by coding agents.
+Stack: Tauri 2 + React + TypeScript (see `docs/adr/0001-react-ui.md`). Agent commands: `AGENTS.md`.

@@ -74,7 +74,7 @@ AuraMate 不是“更好看的番茄钟”，而是一个不打扰、不分心�
 | --- | --- |
 | **桌面框架** | Rust + Tauri 2。 |
 | **项目初始化** | 使用官方 `create-tauri-app` 生成基础项目；不手工预设初始目录结构。 |
-| **前端** | Svelte + TypeScript；以官方脚手架当前可用模板为准。 |
+| **前端** | React + TypeScript；以官方 `create-tauri-app` 的 `react-ts` 模板为准（见 `docs/adr/0001-react-ui.md`）。 |
 | **核心逻辑** | Rust 管理 Timer / Session / Reminder / Presence 状态与时间计算。 |
 | **存储** | SQLite；记录必要的 session、break、overrun 和 presence 时间区间。 |
 | **系统权限** *(新增)* | 早期处理好 macOS Accessibility 或 Windows 低级别 Hook 的权限请求 UX；初期可降级使用 `CGEventSourceSecondsSinceLastOSXEvent` 等低权限 API 判断空闲。 |

@@ -10,14 +10,14 @@ Humans read `README.md`. Product intent lives in `docs/requirement.md`. Phase 1 
 
 ## Commands
 
-Scaffolded with official `create-tauri-app` (Tauri 2, SvelteKit + TypeScript, pnpm).
+Scaffolded with official `create-tauri-app` (Tauri 2, React + TypeScript, pnpm). UI choice: React — see `docs/adr/0001-react-ui.md`.
 
 | Action | Command |
 | --- | --- |
 | Install JS deps | `pnpm install` |
 | Desktop dev | `pnpm tauri dev` |
 | Frontend only | `pnpm dev` |
-| Typecheck (Svelte/TS) | `pnpm check` |
+| Typecheck | `pnpm check` |
 | Lint (scaffold baseline) | `pnpm check`（模板未带 eslint；类型检查即当前 lint 门禁） |
 | Frontend production build | `pnpm build` |
 | Desktop production build | `pnpm tauri build` |
@@ -31,7 +31,7 @@ Rhythm Core tests will live in the Rust crate; prefer `cargo test` at the Rhythm
 | Layer | Choice |
 | --- | --- |
 | Desktop | Rust + Tauri 2 |
-| UI | SvelteKit + TypeScript (from `create-tauri-app` `svelte-ts` template) |
+| UI | React + TypeScript (from `create-tauri-app` `react-ts` template) |
 | Domain logic | Rust owns Timer, Session, Reminder, Presence, and remaining-time math |
 | Storage | SQLite for session, break, overrun, and presence intervals |
 | Time | Remaining time from real timestamps, not `setInterval` decrement |
