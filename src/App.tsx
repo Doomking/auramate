@@ -15,6 +15,7 @@ type Snapshot = {
   presence: Presence;
   show_recovery_hint: boolean;
   recovery_suggestions: string[];
+  hyper_focus: boolean;
 };
 
 type HistoryRow = {
@@ -129,6 +130,11 @@ function App() {
         {formatRemaining(snapshot.remaining_ms, snapshot.overrun_ms)}
       </p>
       {snapshot.paused ? <p className="hint">Paused</p> : null}
+      {snapshot.hyper_focus ? (
+        <p className="hint" role="status">
+          Hyper-Focus — staying quiet
+        </p>
+      ) : null}
       {snapshot.should_nudge ? (
         <p className="hint nudge" role="status">
           Gentle nudge — time for the next step
