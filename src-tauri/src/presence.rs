@@ -41,6 +41,7 @@ fn apply_idle(app: &AppHandle, idle: Duration) {
             let _ = hist.append_closed(&closed, now, wall);
         }
     }
+    crate::persist_after_presence(app);
 }
 
 fn apply_media(app: &AppHandle, active: bool) {
@@ -58,6 +59,7 @@ fn apply_media(app: &AppHandle, active: bool) {
             let _ = hist.append_closed(&closed, now, wall);
         }
     }
+    crate::persist_after_presence(app);
 }
 
 fn apply_sleep(app: &AppHandle) {
@@ -75,6 +77,7 @@ fn apply_sleep(app: &AppHandle) {
             let _ = hist.append_closed(&closed, now, wall);
         }
     }
+    crate::persist_after_presence(app);
 }
 
 fn apply_wake(app: &AppHandle) {
@@ -92,6 +95,7 @@ fn apply_wake(app: &AppHandle) {
             let _ = hist.append_closed(&closed, now, wall);
         }
     }
+    crate::persist_after_presence(app);
 }
 
 #[cfg(target_os = "macos")]

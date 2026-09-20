@@ -1,7 +1,7 @@
 //! Rhythm Core: Focus / Break, presence, 恢复提示, and history interval intents.
 //! Public seam for phase-1 behaviour (see `docs/spec.md`).
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant};
 
 /// Default Focus length (spec).
@@ -37,7 +37,7 @@ pub const RECOVERY_POOL: &[&str] = &[
     "Rest your eyes",
 ];
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Phase {
     Focus,
@@ -63,7 +63,7 @@ pub enum PetState {
     Rest,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum IntervalKind {
     Focus,
@@ -74,6 +74,21 @@ pub enum IntervalKind {
     LockedSleeping,
     HyperFocus,
     MediaMeeting,
+}
+
+/// Durable session snapshot for quit / relaunch (offsets relative to quit Instant).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionCheckpoint {
+    pub phase: Phase,
+    /// `planned_end - quit` in millis (negative when already overdue at quit).
+    pub planned_end_offset_ms: i64,
+    pub paused_remaining_ms: Option<u64>,
+    pub snooze_until_offset_ms: Option<i64>,
+    pub focuses_completed_in_cycle: u32,
+    pub hyper_focus: bool,
+    /// Open 时段 interval start relative to quit (≤ 0). Preserves cross-midnight identity.
+    pub session_start_offset_ms: i64,
+    pub session_kind: IntervalKind,
 }
 
 /// Closed interval intent for the History adapter (wall-clock stamped outside core).
@@ -754,6 +769,74 @@ impl RhythmCore {
         }
         self.sync_overrun(now);
     }
+
+    /// Export durable state at quit for a later `relaunch_from_checkpoint`.
+    pub fn export_checkpoint(&self, now: Instant) -> Option<SessionCheckpoint> {
+        let session = self.session.as_ref()?;
+        let open = self.open_session_interval.as_ref()?;
+        Some(SessionCheckpoint {
+            phase: session.phase,
+            planned_end_offset_ms: signed_offset_ms(now, session.planned_end),
+            paused_remaining_ms: session.paused_remaining.map(|d| d.as_millis() as u64),
+            snooze_until_offset_ms: session
+                .snooze_until
+                .map(|until| signed_offset_ms(now, until)),
+            focuses_completed_in_cycle: self.focuses_completed_in_cycle,
+            hyper_focus: self.hyper_focus,
+            session_start_offset_ms: signed_offset_ms(now, open.start),
+            session_kind: open.kind,
+        })
+    }
+
+    /// Restore after process restart. Gap < ~5 min keeps the same 时段; ≥5 min is 离开 then 归来.
+    pub fn relaunch_from_checkpoint(
+        &mut self,
+        checkpoint: SessionCheckpoint,
+        gap: Duration,
+        now: Instant,
+    ) {
+        let quit = now.checked_sub(gap).unwrap_or(now);
+        self.restore_checkpoint_at(checkpoint, quit);
+
+        if gap < IDLE_AWAY {
+            self.presence = Presence::Active;
+            self.tick(now);
+            self.sync_overrun(now);
+            return;
+        }
+
+        // Long downtime: 离开 at quit (= Start Break if Focus), then 归来 at relaunch.
+        self.enter_away(quit, Presence::Away);
+        self.enter_returned(now);
+        self.tick(now);
+    }
+
+    fn restore_checkpoint_at(&mut self, checkpoint: SessionCheckpoint, quit: Instant) {
+        *self = Self::new();
+        self.focuses_completed_in_cycle = checkpoint.focuses_completed_in_cycle;
+        self.hyper_focus = checkpoint.hyper_focus;
+        if checkpoint.hyper_focus {
+            self.open_hyper_interval = Some(OpenInterval {
+                kind: IntervalKind::HyperFocus,
+                start: quit,
+            });
+        }
+        self.open_session_interval = Some(OpenInterval {
+            kind: checkpoint.session_kind,
+            start: offset_instant(quit, checkpoint.session_start_offset_ms),
+        });
+        self.session = Some(Session {
+            phase: checkpoint.phase,
+            planned_end: offset_instant(quit, checkpoint.planned_end_offset_ms),
+            paused_remaining: checkpoint
+                .paused_remaining_ms
+                .map(Duration::from_millis),
+            snooze_until: checkpoint
+                .snooze_until_offset_ms
+                .map(|ms| offset_instant(quit, ms)),
+        });
+        self.sync_overrun(quit);
+    }
 }
 
 /// True during the short hold window at the start of each ~5 min overrun cycle.
@@ -765,6 +848,24 @@ pub fn pet_nudge_pulse(overrun: Duration) -> bool {
     }
     let cycle = overrun.as_millis() % cadence;
     cycle < hold
+}
+
+fn signed_offset_ms(from: Instant, to: Instant) -> i64 {
+    if to >= from {
+        (to - from).as_millis() as i64
+    } else {
+        -((from - to).as_millis() as i64)
+    }
+}
+
+fn offset_instant(base: Instant, offset_ms: i64) -> Instant {
+    if offset_ms >= 0 {
+        base + Duration::from_millis(offset_ms as u64)
+    } else {
+        base
+            .checked_sub(Duration::from_millis((-offset_ms) as u64))
+            .unwrap_or(base)
+    }
 }
 
 #[cfg(test)]
@@ -1326,5 +1427,123 @@ mod tests {
         core.observe_media_meeting(now + Duration::from_secs(30), false);
         let closed = core.drain_intervals();
         assert!(closed.iter().any(|i| i.kind == IntervalKind::MediaMeeting));
+    }
+
+    #[test]
+    fn short_quit_restores_same_focus_from_timestamps() {
+        let mut core = RhythmCore::new();
+        let now = t0();
+        core.start_focus(now);
+        let quit = now + Duration::from_secs(60);
+        let cp = core.export_checkpoint(quit).expect("checkpoint");
+        let gap = Duration::from_secs(90);
+        let relaunch = quit + gap;
+
+        let mut restored = RhythmCore::new();
+        restored.relaunch_from_checkpoint(cp, gap, relaunch);
+        let snap = restored.snapshot(relaunch);
+        assert_eq!(snap.phase, Some(Phase::Focus));
+        assert_eq!(
+            snap.remaining_ms,
+            (FOCUS_DURATION - Duration::from_secs(150)).as_millis() as u64
+        );
+        assert_eq!(snap.presence, Presence::Active);
+    }
+
+    #[test]
+    fn short_quit_past_end_restores_overrun() {
+        let mut core = RhythmCore::new();
+        let now = t0();
+        core.start_focus(now);
+        let quit = now + FOCUS_DURATION + Duration::from_secs(30);
+        let cp = core.export_checkpoint(quit).expect("checkpoint");
+        let gap = Duration::from_secs(60);
+        let relaunch = quit + gap;
+
+        let mut restored = RhythmCore::new();
+        restored.relaunch_from_checkpoint(cp, gap, relaunch);
+        let snap = restored.snapshot(relaunch);
+        assert_eq!(snap.phase, Some(Phase::Focus));
+        assert_eq!(snap.overrun_ms, Duration::from_secs(90).as_millis() as u64);
+    }
+
+    #[test]
+    fn long_quit_during_focus_is_away_break_then_returned() {
+        let mut core = RhythmCore::new();
+        let now = t0();
+        core.start_focus(now);
+        let quit = now + Duration::from_secs(60);
+        let cp = core.export_checkpoint(quit).expect("checkpoint");
+        let gap = IDLE_AWAY;
+        let relaunch = quit + gap;
+
+        let mut restored = RhythmCore::new();
+        restored.relaunch_from_checkpoint(cp, gap, relaunch);
+        let snap = restored.snapshot(relaunch);
+        assert_eq!(snap.phase, Some(Phase::ShortBreak));
+        assert_eq!(snap.presence, Presence::Returned);
+        assert!(snap.should_nudge, "break ended while away → one Start Focus 轻触");
+        assert!(!snap.show_recovery_hint);
+        let closed = restored.drain_intervals();
+        assert!(closed.iter().any(|i| i.kind == IntervalKind::Away));
+        assert!(closed.iter().any(|i| {
+            i.kind == IntervalKind::Focus && i.start == now && i.end == quit
+        }));
+    }
+
+    #[test]
+    fn long_quit_mid_break_continues_same_break() {
+        let mut core = RhythmCore::new();
+        let now = t0();
+        core.start_focus(now);
+        let break_at = now + Duration::from_secs(1);
+        core.start_break(break_at);
+        let quit = break_at + Duration::from_secs(60);
+        let cp = core.export_checkpoint(quit).expect("checkpoint");
+        let gap = IDLE_AWAY + Duration::from_secs(30);
+        let relaunch = quit + gap;
+
+        let mut restored = RhythmCore::new();
+        restored.relaunch_from_checkpoint(cp, gap, relaunch);
+        let snap = restored.snapshot(relaunch);
+        assert_eq!(snap.phase, Some(Phase::ShortBreak));
+        // Short break 5m; 60s used + gap past end → Returned Start Focus 轻触.
+        assert_eq!(snap.presence, Presence::Returned);
+        assert!(snap.should_nudge);
+        let closed = restored.drain_intervals();
+        // Same Break continues — no second ShortBreak opened at away.
+        let breaks: Vec<_> = closed
+            .iter()
+            .filter(|i| i.kind == IntervalKind::ShortBreak)
+            .collect();
+        assert!(breaks.is_empty(), "break still open, not closed twice: {closed:?}");
+    }
+
+    #[test]
+    fn short_relaunch_keeps_one_session_interval_across_long_span() {
+        // Cross-midnight: one 时段 record — open Focus start preserved through short quit.
+        let mut core = RhythmCore::new();
+        let now = t0();
+        core.start_focus(now);
+        let quit = now + Duration::from_secs(10 * 60);
+        let cp = core.export_checkpoint(quit).expect("checkpoint");
+        let gap = Duration::from_secs(60);
+        let relaunch = quit + gap;
+
+        let mut restored = RhythmCore::new();
+        restored.relaunch_from_checkpoint(cp, gap, relaunch);
+        // Force close via Start Break; Focus interval must still start at original `now`.
+        restored.start_break(relaunch);
+        let closed = restored.drain_intervals();
+        assert!(
+            closed.iter().any(|i| i.kind == IntervalKind::Focus && i.start == now),
+            "expected single Focus from original start (midnight-safe), got {closed:?}"
+        );
+    }
+
+    #[test]
+    fn export_checkpoint_none_when_idle() {
+        let core = RhythmCore::new();
+        assert!(core.export_checkpoint(t0()).is_none());
     }
 }
