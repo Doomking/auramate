@@ -26,6 +26,7 @@ where
     let wall = SystemTime::now();
     let mut core = state.core.lock().expect("rhythm core lock");
     f(&mut core, now);
+    core.tick(Instant::now());
     let closed = core.drain_intervals();
     let snap = core.snapshot(Instant::now());
     drop(core);
@@ -48,8 +49,10 @@ where
 #[tauri::command]
 fn rhythm_snapshot(app: AppHandle, state: State<'_, AppState>) -> Snapshot {
     let snap = {
-        let core = state.core.lock().expect("rhythm core lock");
-        core.snapshot(Instant::now())
+        let mut core = state.core.lock().expect("rhythm core lock");
+        let now = Instant::now();
+        core.tick(now);
+        core.snapshot(now)
     };
     tray::apply_tray(&app, &snap);
     snap
@@ -97,7 +100,18 @@ fn rhythm_skip(app: AppHandle, state: State<'_, AppState>) -> Snapshot {
 
 #[tauri::command]
 fn rhythm_dismiss_recovery(app: AppHandle, state: State<'_, AppState>) -> Snapshot {
-    with_core_and_tray(&app, &state, |core, _now| core.dismiss_recovery_hint())
+    with_core_and_tray(&app, &state, |core, now| core.dismiss_recovery_hint(now))
+}
+
+#[tauri::command]
+fn rhythm_observe_media_meeting(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    active: bool,
+) -> Snapshot {
+    with_core_and_tray(&app, &state, |core, now| {
+        core.observe_media_meeting(now, active)
+    })
 }
 
 #[tauri::command]
@@ -141,6 +155,7 @@ pub fn run() {
             rhythm_snooze,
             rhythm_skip,
             rhythm_dismiss_recovery,
+            rhythm_observe_media_meeting,
             history_list,
         ])
         .run(tauri::generate_context!())

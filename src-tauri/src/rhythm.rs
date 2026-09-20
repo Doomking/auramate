@@ -72,6 +72,7 @@ pub enum IntervalKind {
     Overrun,
     Away,
     LockedSleeping,
+    HyperFocus,
 }
 
 /// Closed interval intent for the History adapter (wall-clock stamped outside core).
@@ -95,6 +96,8 @@ pub struct Snapshot {
     pub show_recovery_hint: bool,
     pub recovery_suggestions: Vec<String>,
     pub pet_state: PetState,
+    /// 深度心流：超时后两次未响应轻触，安静记录，不是失败。
+    pub hyper_focus: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -124,9 +127,18 @@ pub struct RhythmCore {
     suggestion_nonce: u32,
     /// After 归来, allow at most one Start-Focus 轻触 if Break already ended.
     return_nudge_armed: bool,
+    /// 深度心流 active.
+    hyper_focus: bool,
+    /// Unanswered pet-nudge pulses during Focus 超时 while Active (media excluded).
+    unanswered_nudge_pulses: u32,
+    /// Next pulse index to consider for unanswered counting.
+    next_nudge_pulse: u32,
+    /// 媒体/会议：推迟宠物轻触，且不计入深度心流进入。
+    media_meeting: bool,
     open_session_interval: Option<OpenInterval>,
     open_overrun: Option<OpenInterval>,
     open_presence_interval: Option<OpenInterval>,
+    open_hyper_interval: Option<OpenInterval>,
     closed_intervals: Vec<ClosedInterval>,
 }
 
@@ -147,11 +159,22 @@ impl RhythmCore {
             recovery_suggestions: Vec::new(),
             suggestion_nonce: 0,
             return_nudge_armed: false,
+            hyper_focus: false,
+            unanswered_nudge_pulses: 0,
+            next_nudge_pulse: 0,
+            media_meeting: false,
             open_session_interval: None,
             open_overrun: None,
             open_presence_interval: None,
+            open_hyper_interval: None,
             closed_intervals: Vec::new(),
         }
+    }
+
+    /// Advance time-dependent policy (深度心流 entry, overrun intervals).
+    pub fn tick(&mut self, now: Instant) {
+        self.advance_hyper_focus(now);
+        self.sync_overrun(now);
     }
 
     pub fn snapshot(&self, now: Instant) -> Snapshot {
@@ -167,6 +190,7 @@ impl RhythmCore {
                 show_recovery_hint: self.show_recovery_hint,
                 recovery_suggestions: self.recovery_suggestions.clone(),
                 pet_state: PetState::Idle,
+                hyper_focus: self.hyper_focus,
             };
         };
 
@@ -197,6 +221,7 @@ impl RhythmCore {
             show_recovery_hint: self.show_recovery_hint,
             recovery_suggestions: self.recovery_suggestions.clone(),
             pet_state: self.compute_pet_state(session.phase, past_end, should_nudge, overrun),
+            hyper_focus: self.hyper_focus,
         }
     }
 
@@ -207,6 +232,9 @@ impl RhythmCore {
         should_nudge: bool,
         overrun: Duration,
     ) -> PetState {
+        if self.hyper_focus {
+            return PetState::Idle;
+        }
         match phase {
             Phase::ShortBreak | Phase::LongBreak if !past_end => PetState::Rest,
             Phase::ShortBreak | Phase::LongBreak => {
@@ -228,6 +256,9 @@ impl RhythmCore {
     }
 
     fn idle_nudge(&self, boundary_nudge: bool, break_past_end: bool) -> bool {
+        if self.hyper_focus {
+            return false;
+        }
         // Brief idle (~30s): still Active, but silence 轻触.
         if self.last_idle >= IDLE_QUIET
             && !matches!(
@@ -257,6 +288,94 @@ impl RhythmCore {
                 end: now,
             });
         }
+    }
+
+    fn exit_hyper_focus(&mut self, now: Instant) {
+        if !self.hyper_focus {
+            return;
+        }
+        self.hyper_focus = false;
+        Self::close_open(
+            &mut self.open_hyper_interval,
+            now,
+            &mut self.closed_intervals,
+        );
+        self.reset_nudge_counters();
+    }
+
+    fn reset_nudge_counters(&mut self) {
+        self.unanswered_nudge_pulses = 0;
+        self.next_nudge_pulse = 0;
+    }
+
+    fn enter_hyper_focus(&mut self, now: Instant) {
+        if self.hyper_focus {
+            return;
+        }
+        self.hyper_focus = true;
+        Self::close_open(
+            &mut self.open_hyper_interval,
+            now,
+            &mut self.closed_intervals,
+        );
+        self.open_hyper_interval = Some(OpenInterval {
+            kind: IntervalKind::HyperFocus,
+            start: now,
+        });
+    }
+
+    /// Count unanswered Focus-overrun pet pulses; enter 深度心流 after two.
+    fn advance_hyper_focus(&mut self, now: Instant) {
+        if self.hyper_focus {
+            return;
+        }
+        let Some(session) = &self.session else {
+            self.reset_nudge_counters();
+            return;
+        };
+        if session.phase != Phase::Focus || session.paused_remaining.is_some() {
+            self.reset_nudge_counters();
+            return;
+        }
+        if now < session.planned_end {
+            self.reset_nudge_counters();
+            return;
+        }
+        if !matches!(self.presence, Presence::Active) {
+            return;
+        }
+        // Brief quiet idle: still Active, but do not count toward 深度心流.
+        if self.last_idle >= IDLE_QUIET {
+            return;
+        }
+
+        let overrun = now - session.planned_end;
+        let pulse = (overrun.as_millis() / PET_NUDGE_CADENCE.as_millis()) as u32;
+
+        if self.media_meeting {
+            // Skip media pulses — advance cursor so they are not counted later.
+            if pulse + 1 > self.next_nudge_pulse {
+                self.next_nudge_pulse = pulse + 1;
+            }
+            return;
+        }
+
+        while self.next_nudge_pulse <= pulse {
+            self.unanswered_nudge_pulses += 1;
+            self.next_nudge_pulse += 1;
+        }
+
+        // After two unanswered pulses (indices 0 and 1), enter when the third
+        // slot begins so both 轻触 were visible first.
+        if self.unanswered_nudge_pulses >= 2 && pulse >= 2 {
+            self.enter_hyper_focus(now);
+        }
+    }
+
+    /// User responded — clear 深度心流 and unanswered streak.
+    fn note_user_action(&mut self, now: Instant) {
+        self.exit_hyper_focus(now);
+        self.reset_nudge_counters();
     }
 
     fn open_session(&mut self, kind: IntervalKind, now: Instant) {
@@ -316,6 +435,7 @@ impl RhythmCore {
 
     /// Start a Focus 时段 from Idle or after a Break.
     pub fn start_focus(&mut self, now: Instant) {
+        self.note_user_action(now);
         self.show_recovery_hint = false;
         self.recovery_suggestions.clear();
         self.return_nudge_armed = false;
@@ -344,6 +464,10 @@ impl RhythmCore {
         if session.phase != Phase::Focus {
             return;
         }
+
+        // Away or button: leave 深度心流.
+        self.exit_hyper_focus(now);
+        self.reset_nudge_counters();
 
         self.focuses_completed_in_cycle += 1;
         let (phase, duration, kind) = if self.focuses_completed_in_cycle >= FOCUSES_PER_LONG_BREAK
@@ -383,13 +507,14 @@ impl RhythmCore {
     }
 
     /// Dismiss 恢复提示 without ending the Break.
-    pub fn dismiss_recovery_hint(&mut self) {
+    pub fn dismiss_recovery_hint(&mut self, now: Instant) {
+        self.note_user_action(now);
         self.show_recovery_hint = false;
-        // Keep suggestions cleared so UI stays quiet.
         self.recovery_suggestions.clear();
     }
 
     pub fn pause(&mut self, now: Instant) {
+        self.note_user_action(now);
         let Some(session) = &mut self.session else {
             return;
         };
@@ -406,6 +531,7 @@ impl RhythmCore {
     }
 
     pub fn resume(&mut self, now: Instant) {
+        self.note_user_action(now);
         let Some(session) = &mut self.session else {
             return;
         };
@@ -418,6 +544,7 @@ impl RhythmCore {
 
     /// 加时：同一时段，计划结束点后移。
     pub fn extend(&mut self, now: Instant, by: Duration) {
+        self.note_user_action(now);
         let Some(session) = &mut self.session else {
             return;
         };
@@ -434,6 +561,7 @@ impl RhythmCore {
 
     /// 延后：不延长时段，只推迟下一次轻触。
     pub fn snooze(&mut self, now: Instant) {
+        self.note_user_action(now);
         let Some(session) = &mut self.session else {
             return;
         };
@@ -443,6 +571,7 @@ impl RhythmCore {
 
     /// 跳过：Focus → 下一段 Focus（不写休息）；Break → 开始专注。
     pub fn skip(&mut self, now: Instant) {
+        self.note_user_action(now);
         let Some(session) = &self.session else {
             return;
         };
@@ -475,11 +604,13 @@ impl RhythmCore {
             self.enter_returned(now);
             return;
         }
-        // idle < AWAY: stay Active (brief idle only silences 轻触 via last_idle).
-        // Returned persists until the user acts (start focus / skip / etc.).
-        if self.presence == Presence::Active || self.presence == Presence::Returned {
-            self.sync_overrun(now);
-        }
+        self.tick(now);
+    }
+
+    /// 媒体/会议 on/off — postpones pet 轻触 counting toward 深度心流.
+    pub fn observe_media_meeting(&mut self, now: Instant, active: bool) {
+        self.media_meeting = active;
+        self.tick(now);
     }
 
     /// Sleep / lock bucket: immediate 离开.
@@ -495,14 +626,17 @@ impl RhythmCore {
         ) {
             self.enter_returned(now);
         }
+        self.tick(now);
     }
 
     fn enter_away(&mut self, now: Instant, presence: Presence) {
+        self.exit_hyper_focus(now);
+        self.reset_nudge_counters();
         if matches!(
             self.presence,
             Presence::Away | Presence::LockedSleeping
         ) {
-            // Already away: upgrade Quiet→Away already handled; if Focus still running, ensure break.
+            // Already away: if Focus still running, ensure break.
             self.ensure_away_break(now);
             self.presence = presence;
             self.sync_overrun(now);
@@ -896,7 +1030,7 @@ mod tests {
         let now = t0();
         core.start_focus(now);
         core.start_break(now + Duration::from_secs(1));
-        core.dismiss_recovery_hint();
+        core.dismiss_recovery_hint(now + Duration::from_secs(1));
         let snap = core.snapshot(now + Duration::from_secs(1));
         assert!(!snap.show_recovery_hint);
         assert_eq!(snap.phase, Some(Phase::ShortBreak));
@@ -990,5 +1124,97 @@ mod tests {
         core.observe_idle(past, IDLE_QUIET);
         assert_eq!(core.snapshot(past).pet_state, PetState::Idle);
         assert!(!core.snapshot(past).should_nudge);
+    }
+
+    #[test]
+    fn hyper_focus_after_two_unanswered_nudge_pulses() {
+        let mut core = RhythmCore::new();
+        let now = t0();
+        core.start_focus(now);
+        let at_end = now + FOCUS_DURATION;
+        core.tick(at_end);
+        assert!(!core.snapshot(at_end).hyper_focus);
+        assert_eq!(core.snapshot(at_end).pet_state, PetState::Nudge);
+
+        let after_two = at_end + PET_NUDGE_CADENCE * 2;
+        core.tick(after_two);
+        let snap = core.snapshot(after_two);
+        assert!(snap.hyper_focus);
+        assert!(!snap.should_nudge);
+        assert_eq!(snap.pet_state, PetState::Idle);
+        // Not a failure phase — still Focus.
+        assert_eq!(snap.phase, Some(Phase::Focus));
+    }
+
+    #[test]
+    fn button_exits_hyper_focus() {
+        let mut core = RhythmCore::new();
+        let now = t0();
+        core.start_focus(now);
+        let deep = now + FOCUS_DURATION + PET_NUDGE_CADENCE * 2;
+        core.tick(deep);
+        assert!(core.snapshot(deep).hyper_focus);
+        core.extend(deep, EXTEND_FIVE);
+        assert!(!core.snapshot(deep).hyper_focus);
+    }
+
+    #[test]
+    fn away_exits_hyper_focus() {
+        let mut core = RhythmCore::new();
+        let now = t0();
+        core.start_focus(now);
+        let deep = now + FOCUS_DURATION + PET_NUDGE_CADENCE * 2;
+        core.tick(deep);
+        assert!(core.snapshot(deep).hyper_focus);
+        core.observe_idle(deep + Duration::from_secs(1), IDLE_AWAY);
+        assert!(!core.snapshot(deep + Duration::from_secs(1)).hyper_focus);
+        assert_eq!(
+            core.snapshot(deep + Duration::from_secs(1)).phase,
+            Some(Phase::ShortBreak)
+        );
+    }
+
+    #[test]
+    fn sleep_exits_hyper_focus() {
+        let mut core = RhythmCore::new();
+        let now = t0();
+        core.start_focus(now);
+        let deep = now + FOCUS_DURATION + PET_NUDGE_CADENCE * 2;
+        core.tick(deep);
+        assert!(core.snapshot(deep).hyper_focus);
+        core.observe_sleep(deep + Duration::from_secs(1));
+        assert!(!core.snapshot(deep + Duration::from_secs(1)).hyper_focus);
+    }
+
+    #[test]
+    fn media_meeting_pulses_do_not_count_toward_hyper_focus() {
+        let mut core = RhythmCore::new();
+        let now = t0();
+        core.start_focus(now);
+        let at_end = now + FOCUS_DURATION;
+        core.observe_media_meeting(at_end, true);
+        // Two cadence windows while media — must not enter.
+        let later = at_end + PET_NUDGE_CADENCE * 2;
+        core.tick(later);
+        assert!(!core.snapshot(later).hyper_focus);
+        core.observe_media_meeting(later, false);
+        // After media ends, still need two non-media pulses.
+        core.tick(later);
+        assert!(!core.snapshot(later).hyper_focus);
+        let after_two_more = later + PET_NUDGE_CADENCE * 2;
+        core.tick(after_two_more);
+        assert!(core.snapshot(after_two_more).hyper_focus);
+    }
+
+    #[test]
+    fn hyper_focus_emits_history_interval() {
+        let mut core = RhythmCore::new();
+        let now = t0();
+        core.start_focus(now);
+        let deep = now + FOCUS_DURATION + PET_NUDGE_CADENCE * 2;
+        core.tick(deep);
+        core.extend(deep, EXTEND_FIVE);
+        let closed = core.drain_intervals();
+        assert!(closed.iter().any(|i| i.kind == IntervalKind::HyperFocus));
     }
 }
