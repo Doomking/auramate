@@ -48,10 +48,20 @@ body {
   font-size: 0.95rem;
 }
 
+.hint.nudge {
+  color: #8ea394;
+}
+
 .actions {
   display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
   gap: 0.75rem;
   margin-top: 1.25rem;
+}
+
+.actions.secondary {
+  margin-top: 0.5rem;
 }
 
 button {

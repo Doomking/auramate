@@ -12,6 +12,12 @@ pub const SHORT_BREAK_DURATION: Duration = Duration::from_secs(5 * 60);
 pub const LONG_BREAK_DURATION: Duration = Duration::from_secs(15 * 60);
 /// Focus 时段s before a Long Break.
 pub const FOCUSES_PER_LONG_BREAK: u32 = 4;
+/// 加时 +5.
+pub const EXTEND_FIVE: Duration = Duration::from_secs(5 * 60);
+/// 加时 +10.
+pub const EXTEND_TEN: Duration = Duration::from_secs(10 * 60);
+/// 延后：推迟下一次提醒，不延长时段。
+pub const SNOOZE_DELAY: Duration = Duration::from_secs(5 * 60);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -32,6 +38,8 @@ pub struct Snapshot {
     pub paused: bool,
     /// Completed Focus 时段s in the current cycle (0..FOCUSES_PER_LONG_BREAK).
     pub focuses_completed_in_cycle: u32,
+    /// 轻触意图：到点/超时且未被延后压制。忽略不是失败。
+    pub should_nudge: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -39,9 +47,11 @@ struct Session {
     phase: Phase,
     planned_end: Instant,
     paused_remaining: Option<Duration>,
+    /// When set, suppress 轻触 until this instant (延后).
+    snooze_until: Option<Instant>,
 }
 
-/// Deep module owning 阶段 / 时段 / 暂停 semantics.
+/// Deep module owning 阶段 / 时段 / 暂停 / 加时 / 延后 / 跳过 semantics.
 #[derive(Debug, Clone)]
 pub struct RhythmCore {
     session: Option<Session>,
@@ -70,6 +80,7 @@ impl RhythmCore {
                 overrun_ms: 0,
                 paused: false,
                 focuses_completed_in_cycle: self.focuses_completed_in_cycle,
+                should_nudge: false,
             };
         };
 
@@ -82,12 +93,20 @@ impl RhythmCore {
             (Duration::ZERO, now - session.planned_end)
         };
 
+        let past_end = !paused && now >= session.planned_end;
+        let snooze_active = session
+            .snooze_until
+            .map(|until| now < until)
+            .unwrap_or(false);
+        let should_nudge = past_end && !snooze_active;
+
         Snapshot {
             phase: Some(session.phase),
             remaining_ms: remaining.as_millis() as u64,
             overrun_ms: overrun.as_millis() as u64,
             paused,
             focuses_completed_in_cycle: self.focuses_completed_in_cycle,
+            should_nudge,
         }
     }
 
@@ -97,6 +116,7 @@ impl RhythmCore {
             phase: Phase::Focus,
             planned_end: now + FOCUS_DURATION,
             paused_remaining: None,
+            snooze_until: None,
         });
     }
 
@@ -121,6 +141,7 @@ impl RhythmCore {
             phase,
             planned_end: now + duration,
             paused_remaining: None,
+            snooze_until: None,
         });
     }
 
@@ -148,6 +169,49 @@ impl RhythmCore {
         };
         session.planned_end = now + remaining;
     }
+
+    /// 加时：同一时段，计划结束点后移。
+    pub fn extend(&mut self, now: Instant, by: Duration) {
+        let Some(session) = &mut self.session else {
+            return;
+        };
+        if let Some(rem) = &mut session.paused_remaining {
+            *rem += by;
+        } else if now < session.planned_end {
+            session.planned_end += by;
+        } else {
+            // Already past end: give `by` from now.
+            session.planned_end = now + by;
+        }
+        session.snooze_until = None;
+    }
+
+    /// 延后：不延长时段，只推迟下一次轻触。
+    pub fn snooze(&mut self, now: Instant) {
+        let Some(session) = &mut self.session else {
+            return;
+        };
+        session.snooze_until = Some(now + SNOOZE_DELAY);
+    }
+
+    /// 跳过：Focus → 下一段 Focus（不写休息）；Break → 开始专注。
+    pub fn skip(&mut self, now: Instant) {
+        let Some(session) = &self.session else {
+            return;
+        };
+        match session.phase {
+            Phase::Focus => {
+                self.focuses_completed_in_cycle += 1;
+                if self.focuses_completed_in_cycle >= FOCUSES_PER_LONG_BREAK {
+                    self.focuses_completed_in_cycle = 0;
+                }
+                self.start_focus(now);
+            }
+            Phase::ShortBreak | Phase::LongBreak => {
+                self.start_focus(now);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -165,6 +229,7 @@ mod tests {
         assert_eq!(snap.phase, None);
         assert_eq!(snap.remaining_ms, 0);
         assert!(!snap.paused);
+        assert!(!snap.should_nudge);
     }
 
     #[test]
@@ -182,6 +247,7 @@ mod tests {
             snap.remaining_ms,
             (FOCUS_DURATION - Duration::from_secs(60)).as_millis() as u64
         );
+        assert!(!snap.should_nudge);
     }
 
     #[test]
@@ -190,7 +256,10 @@ mod tests {
         let now = t0();
         core.start_focus(now);
         core.start_break(now + Duration::from_secs(1));
-        assert_eq!(core.snapshot(now + Duration::from_secs(1)).phase, Some(Phase::ShortBreak));
+        assert_eq!(
+            core.snapshot(now + Duration::from_secs(1)).phase,
+            Some(Phase::ShortBreak)
+        );
         assert_eq!(
             core.snapshot(now + Duration::from_secs(1)).remaining_ms,
             SHORT_BREAK_DURATION.as_millis() as u64
@@ -242,7 +311,6 @@ mod tests {
             (FOCUS_DURATION - Duration::from_secs(100)).as_millis() as u64
         );
 
-        // Time passes while paused — remaining unchanged
         let later = at_pause + Duration::from_secs(500);
         assert_eq!(core.snapshot(later).remaining_ms, frozen.remaining_ms);
 
@@ -268,5 +336,98 @@ mod tests {
         assert_eq!(snap.remaining_ms, 0);
         assert_eq!(snap.overrun_ms, 30_000);
         assert_eq!(snap.phase, Some(Phase::Focus));
+        assert!(snap.should_nudge);
+    }
+
+    #[test]
+    fn extend_moves_planned_end_on_same_session() {
+        let mut core = RhythmCore::new();
+        let now = t0();
+        core.start_focus(now);
+        core.extend(now, EXTEND_FIVE);
+        assert_eq!(
+            core.snapshot(now).remaining_ms,
+            (FOCUS_DURATION + EXTEND_FIVE).as_millis() as u64
+        );
+        core.extend(now, EXTEND_TEN);
+        assert_eq!(
+            core.snapshot(now).remaining_ms,
+            (FOCUS_DURATION + EXTEND_FIVE + EXTEND_TEN).as_millis() as u64
+        );
+        assert_eq!(core.snapshot(now).phase, Some(Phase::Focus));
+    }
+
+    #[test]
+    fn extend_from_overrun_gives_fresh_remaining() {
+        let mut core = RhythmCore::new();
+        let now = t0();
+        core.start_focus(now);
+        let past = now + FOCUS_DURATION + Duration::from_secs(60);
+        assert!(core.snapshot(past).should_nudge);
+        core.extend(past, EXTEND_FIVE);
+        let snap = core.snapshot(past);
+        assert_eq!(snap.remaining_ms, EXTEND_FIVE.as_millis() as u64);
+        assert_eq!(snap.overrun_ms, 0);
+        assert!(!snap.should_nudge);
+    }
+
+    #[test]
+    fn snooze_defers_nudge_without_extending_session() {
+        let mut core = RhythmCore::new();
+        let now = t0();
+        core.start_focus(now);
+        let past = now + FOCUS_DURATION + Duration::from_secs(10);
+        assert_eq!(core.snapshot(past).overrun_ms, 10_000);
+        assert!(core.snapshot(past).should_nudge);
+
+        core.snooze(past);
+        assert!(!core.snapshot(past).should_nudge);
+        assert_eq!(core.snapshot(past).overrun_ms, 10_000);
+
+        let still_snoozed = past + Duration::from_secs(60);
+        assert!(!core.snapshot(still_snoozed).should_nudge);
+        assert!(core.snapshot(still_snoozed).overrun_ms > 10_000);
+
+        let after_snooze = past + SNOOZE_DELAY;
+        assert!(core.snapshot(after_snooze).should_nudge);
+    }
+
+    #[test]
+    fn skip_focus_starts_next_focus_without_break() {
+        let mut core = RhythmCore::new();
+        let now = t0();
+        core.start_focus(now);
+        core.skip(now + Duration::from_secs(1));
+        let snap = core.snapshot(now + Duration::from_secs(1));
+        assert_eq!(snap.phase, Some(Phase::Focus));
+        assert_eq!(snap.focuses_completed_in_cycle, 1);
+        assert_eq!(snap.remaining_ms, FOCUS_DURATION.as_millis() as u64);
+    }
+
+    #[test]
+    fn skip_break_starts_focus() {
+        let mut core = RhythmCore::new();
+        let now = t0();
+        core.start_focus(now);
+        core.start_break(now + Duration::from_secs(1));
+        core.skip(now + Duration::from_secs(2));
+        assert_eq!(
+            core.snapshot(now + Duration::from_secs(2)).phase,
+            Some(Phase::Focus)
+        );
+    }
+
+    #[test]
+    fn ignoring_nudge_is_not_a_failure_state() {
+        let mut core = RhythmCore::new();
+        let now = t0();
+        core.start_focus(now);
+        let past = now + FOCUS_DURATION + Duration::from_secs(5);
+        let a = core.snapshot(past);
+        let b = core.snapshot(past + Duration::from_secs(30));
+        assert!(a.should_nudge && b.should_nudge);
+        assert_eq!(a.phase, b.phase);
+        // Still Focus — no failure / penalty phase.
+        assert_eq!(b.phase, Some(Phase::Focus));
     }
 }
